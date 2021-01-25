@@ -28,7 +28,7 @@ const (
 var (
 	labelNames = []string{"ip", "host"}
 
-	pingResponseTtl = prometheus.NewGaugeVec(
+	pingResponseTTL = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: namespace,
 			Name:      "response_ttl",
@@ -36,10 +36,41 @@ var (
 		},
 		labelNames,
 	)
+
+	pingPacketsSent = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "packets_sent_total",
+			Help:      "Number of ping packets sent",
+		},
+		labelNames,
+	)
+
+	pingPacketsRecv = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "packets_recv_total",
+			Help:      "Number of ping packets received (to calculate loss)",
+		},
+		labelNames,
+	)
+
+	pingPacketLoss = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "packet_loss_percent",
+			Help:      "The packet loss in percent",
+		},
+		labelNames,
+	)
+	
 )
 
 func init() {
-	prometheus.MustRegister(pingResponseTtl)
+	prometheus.MustRegister(pingResponseTTL)
+	prometheus.MustRegister(pingPacketsSent)
+	prometheus.MustRegister(pingPacketsRecv)
+	prometheus.MustRegister(pingPacketLoss)
 }
 
 func newPingResponseHistogram(buckets []float64) *prometheus.HistogramVec {
@@ -61,11 +92,12 @@ type SmokepingCollector struct {
 	requestsSent *prometheus.Desc
 }
 
+// NewSmokepingCollector return a SmokepingCollector
 func NewSmokepingCollector(pingers *[]*ping.Pinger, pingResponseSeconds prometheus.HistogramVec) *SmokepingCollector {
 	for _, pinger := range *pingers {
 		pinger.OnRecv = func(pkt *ping.Packet) {
 			pingResponseSeconds.WithLabelValues(pkt.IPAddr.String(), pkt.Addr).Observe(pkt.Rtt.Seconds())
-			pingResponseTtl.WithLabelValues(pkt.IPAddr.String(), pkt.Addr).Set(float64(pkt.Ttl))
+			pingResponseTTL.WithLabelValues(pkt.IPAddr.String(), pkt.Addr).Set(float64(pkt.Ttl))
 			log.Debugf("%d bytes from %s: icmp_seq=%d time=%v ttl=%v\n",
 				pkt.Nbytes, pkt.IPAddr, pkt.Seq, pkt.Rtt, pkt.Ttl)
 		}
@@ -90,12 +122,16 @@ func NewSmokepingCollector(pingers *[]*ping.Pinger, pingResponseSeconds promethe
 }
 
 func (s *SmokepingCollector) Describe(ch chan<- *prometheus.Desc) {
-	ch <- s.requestsSent
+ 	ch <- s.requestsSent
 }
 
 func (s *SmokepingCollector) Collect(ch chan<- prometheus.Metric) {
 	for _, pinger := range *s.pingers {
 		stats := pinger.Statistics()
+
+		pingPacketsSent.WithLabelValues(stats.IPAddr.String(), stats.Addr).Set(float64(stats.PacketsSent))
+		pingPacketsRecv.WithLabelValues(stats.IPAddr.String(), stats.Addr).Set(float64(stats.PacketsRecv))
+		pingPacketLoss.WithLabelValues(stats.IPAddr.String(), stats.Addr).Set(stats.PacketLoss)
 
 		ch <- prometheus.MustNewConstMetric(
 			s.requestsSent,
